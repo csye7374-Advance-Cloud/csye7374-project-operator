@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-logr/logr"
 	csye7374v1alpha1 "github.com/yogitapatil/csye7374-termproject-operator/pkg/apis/csye7374/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -150,6 +151,45 @@ func (r *ReconcileAppService) Reconcile(request reconcile.Request) (reconcile.Re
 	createdIamUser, err := createIamUser(svc, instance)
 	if err != nil {
 		return reconcile.Result{}, err
+	}
+
+	finalizerName := "csye7374Finalizer"
+
+	// examine DeletionTimestamp to determine if object is under deletion
+	if instance.ObjectMeta.DeletionTimestamp.IsZero() {
+		// The object is not being deleted, so if it does not have our finalizer,
+		// then lets add the finalizer and update the object. This is equivalent
+		// registering our finalizer.
+		if !containsString(instance.ObjectMeta.Finalizers, finalizerName) {
+			instance.ObjectMeta.Finalizers = append(instance.ObjectMeta.Finalizers, finalizerName)
+			if err := r.client.Update(context.Background(), instance); err != nil {
+				return reconcile.Result{}, err
+			}
+		}
+	} else {
+		// The object is being deleted
+		if containsString(instance.ObjectMeta.Finalizers, finalizerName) {
+			// our finalizer is present, so lets handle any external dependency
+			if err := r.deleteExternalResources(instance, sess, s3BucketName, createdIamUser, reqLogger); err != nil {
+				// if fail to delete the external dependency here, return with error
+				// so that it can be retried
+				if err != nil {
+					reqLogger.Info("Error While Deletion External Resources ", err)
+				} else {
+					reqLogger.Info("External Resources Delete Successfully")
+				}
+				return reconcile.Result{}, err
+			}
+
+			// remove our finalizer from the list and update it.
+			instance.ObjectMeta.Finalizers = removeString(instance.ObjectMeta.Finalizers, finalizerName)
+			if err := r.client.Update(context.Background(), instance); err != nil {
+				return reconcile.Result{}, err
+			}
+		}
+
+		// Stop reconciliation as the item is being deleted
+		return reconcile.Result{}, nil
 	}
 
 	// TODO: Created policy using the above created user and Attach policy to the user
@@ -298,6 +338,80 @@ func createAwsSession(accessKeyID string, secretAccessKey string, region string)
 	return s, nil
 }
 
+func (r *ReconcileAppService) deleteExternalResources(instance *csye7374v1alpha1.AppService, s *session.Session, s3bucketName string, user *iam.User, reqLogger logr.Logger) error {
+
+	reqLogger.Info("Deleting Folder from S3 Bucket")
+	err := deleteFolderFromS3Bucker(instance, s, s3bucketName)
+
+	if err != nil {
+		return err
+	}
+	reqLogger.Info("Folder from S3 Delete Successfully")
+
+	svc := iam.New(s)
+
+	reqLogger.Info("Getting Policy Attached to User")
+	policyArn, err := getAttachedPolicytoUser(svc, user.UserName)
+
+	reqLogger.Info("Detaching Policy from User")
+	err = detachPolicyFromUser(svc, *user.UserName, policyArn)
+	if err != nil {
+		return err
+	}
+	reqLogger.Info("Policy Detached Successfully")
+
+	reqLogger.Info("Deleting Policy")
+	err = deletePolicy(svc, *policyArn)
+	if err != nil {
+		return err
+	}
+	reqLogger.Info("Policy Deleted Successfully")
+
+	reqLogger.Info("Getting Access Key ID")
+	accessKeyId, err := getAccessKey(svc, *user.UserName)
+
+	if err != nil {
+		return nil
+	}
+
+	reqLogger.Info("Deleting Access Key")
+	err = deleteAccessKey(svc, accessKeyId, *user.UserName)
+	if err != nil {
+		return nil
+	}
+	reqLogger.Info("Access Key Deleted Successfully")
+
+	reqLogger.Info("Deleting User")
+	err = deleteIamUser(svc, *user.UserName)
+	if err != nil {
+		return err
+	}
+	reqLogger.Info("User Deleted Successfully")
+
+	return nil
+
+}
+
+// Helper functions to check and remove string from a slice of strings.
+func containsString(slice []string, s string) bool {
+	for _, item := range slice {
+		if item == s {
+			return true
+		}
+	}
+	return false
+}
+
+func removeString(slice []string, s string) (result []string) {
+	for _, item := range slice {
+		if item == s {
+			continue
+		}
+		result = append(result, item)
+	}
+	return
+}
+
 func (r *ReconcileAppService) getDataFromSecret(secretName, namespace string) (string, string, string, error) {
 	secret := &corev1.Secret{}
 	err := r.client.Get(context.TODO(),
@@ -348,6 +462,65 @@ func createFolderS3Bucket(cr *csye7374v1alpha1.AppService, s *session.Session, s
 		return err
 	}
 
+	return nil
+}
+
+func deleteFolderFromS3Bucker(cr *csye7374v1alpha1.AppService, s *session.Session, s3BucketName string) error {
+
+	folderName := cr.Spec.UserName + "/"
+
+	s3Session := s3.New(s)
+
+	_, err := s3Session.DeleteObject(&s3.DeleteObjectInput{Bucket: aws.String(s3BucketName), Key: aws.String(folderName)})
+
+	if err != nil {
+		return err
+	}
+
+	err = s3Session.WaitUntilObjectNotExists(&s3.HeadObjectInput{
+		Bucket: aws.String(s3BucketName),
+		Key:    aws.String(folderName),
+	})
+
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func detachPolicyFromUser(svc *iam.IAM, userName string, policyArn *string) error {
+	_, err := svc.DetachUserPolicy(&iam.DetachUserPolicyInput{
+		UserName:  aws.String(userName),
+		PolicyArn: policyArn,
+	})
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func deletePolicy(svc *iam.IAM, policyArn string) error {
+
+	_, err := svc.DeletePolicy(&iam.DeletePolicyInput{
+		PolicyArn: aws.String(string(policyArn)),
+	})
+
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func deleteIamUser(svc *iam.IAM, userName string) error {
+	_, err := svc.DeleteUser(&iam.DeleteUserInput{
+		UserName: aws.String(userName),
+	})
+
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
