@@ -1,0 +1,9 @@
+apiVersion: csye7374.app.com/v1alpha1
+kind: AppService
+metadata:
+  name: folder-appservice
+spec:
+  # Add fields here
+  userName: test
+  userSecret:
+    name: test-secret
