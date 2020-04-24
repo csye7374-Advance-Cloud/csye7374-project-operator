@@ -86,6 +86,18 @@ type ReconcileAppService struct {
 	scheme *runtime.Scheme
 }
 
+type PolicyDocument struct {
+	Version   string
+	Statement []StatementEntry
+}
+
+type StatementEntry struct {
+	Effect    string
+	Action    []string
+	Resource  string
+	Condition string `json:"condition,omitempty"`
+}
+
 // Reconcile reads that state of the cluster for a AppService object and makes changes based on the state read
 // and what is in the AppService.Spec
 // TODO(user): Modify this Reconcile function to implement your Controller logic.  This example creates
@@ -109,6 +121,15 @@ func (r *ReconcileAppService) Reconcile(request reconcile.Request) (reconcile.Re
 		}
 		// Error reading the object - requeue the request.
 		return reconcile.Result{}, err
+	}
+
+	secret := &corev1.Secret{}
+	err = r.client.Get(context.TODO(), types.NamespacedName{Name: instance.Spec.UserSecret.Name, Namespace: instance.Namespace}, secret)
+	if err != nil && errors.IsNotFound(err) {
+		err = r.updateStatus(false, instance)
+		if err != nil {
+			return reconcile.Result{}, err
+		}
 	}
 
 	// Get AWS credendtails and S3 bucket name from secret
@@ -221,33 +242,13 @@ func (r *ReconcileAppService) Reconcile(request reconcile.Request) (reconcile.Re
 				}
 			}
 
-			// create new access keys
-			accessKey, err := createAccessKey(svc, aws.StringValue(createdIamUser.UserName))
-			if err != nil {
-				if iam.ErrCodeEntityAlreadyExistsException == err.Error() {
-					fmt.Printf("Policy Already Exist")
-				} else {
-					return reconcile.Result{}, err
-				}
-			}
-
-			// create secret
-			secret := newSecret(instance, accessKey)
-
-			// Set AppService instance as the owner and controller
-			if err = controllerutil.SetControllerReference(instance, secret, r.scheme); err != nil {
-				return reconcile.Result{}, err
-			}
-
-			reqLogger.Info("Creating a new Secret", "Secret.Namespace", secret.Namespace, "Secret.Name", secret.Name)
 			// Create new secret
-			err = r.client.Create(context.TODO(), secret)
+			err = r.createSecret(svc, instance, aws.StringValue(createdIamUser.UserName))
 			if err != nil {
 				return reconcile.Result{}, err
 			}
 
 			reqLogger.Info("Secret created Successfully")
-
 			return reconcile.Result{}, nil
 		}
 
@@ -274,35 +275,26 @@ func (r *ReconcileAppService) Reconcile(request reconcile.Request) (reconcile.Re
 	}
 
 	if shouldRecreateAccessKeyAndSecret {
-		// create new access keys
-		accessKey, err := createAccessKey(svc, aws.StringValue(createdIamUser.UserName))
-		if err != nil {
-			return reconcile.Result{}, err
-		}
-
 		// Delete existing secret
 		err = r.client.Delete(context.TODO(), foundUserSecret)
 		if err != nil {
 			return reconcile.Result{}, err
 		}
-		// create secret and return
-		secret := newSecret(instance, accessKey)
 
-		// Set AppService instance as the owner and controller
-		if err := controllerutil.SetControllerReference(instance, secret, r.scheme); err != nil {
-			return reconcile.Result{}, err
-		}
-
-		reqLogger.Info("Creating a new Secret", "Secret.Namespace", secret.Namespace, "Secret.Name", secret.Name)
 		// Create new secret
-		err = r.client.Create(context.TODO(), secret)
+		err = r.createSecret(svc, instance, aws.StringValue(createdIamUser.UserName))
 		if err != nil {
 			return reconcile.Result{}, err
 		}
 
 		reqLogger.Info("Secret created Successfully")
-
 		return reconcile.Result{}, nil
+	}
+
+	//update status fields SetupComplete
+	err = r.updateStatus(true, instance)
+	if err != nil {
+		return reconcile.Result{}, err
 	}
 
 	// Secret already exists - don't requeue
@@ -684,25 +676,43 @@ func newSecret(cr *csye7374v1alpha1.AppService, accessKey *iam.AccessKey) *corev
 	}
 }
 
-// newPodForCR returns a busybox pod with the same name/namespace as the cr
-func newPodForCR(cr *csye7374v1alpha1.AppService) *corev1.Pod {
-	labels := map[string]string{
-		"app": cr.Name,
+func (r *ReconcileAppService) updateStatus(status bool, cr *csye7374v1alpha1.AppService) error {
+	cr.Status.SetupComplete = status
+	err := r.client.Status().Update(context.TODO(), cr)
+	if err != nil {
+		return err
 	}
-	return &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      cr.Name + "-pod",
-			Namespace: cr.Namespace,
-			Labels:    labels,
-		},
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{
-				{
-					Name:    "busybox",
-					Image:   "busybox",
-					Command: []string{"sleep", "3600"},
-				},
-			},
-		},
+	return nil
+}
+
+func (r *ReconcileAppService) createSecret(svc *iam.IAM, cr *csye7374v1alpha1.AppService, userName string) error {
+	// create new access keys
+	accessKey, err := createAccessKey(svc, userName)
+	if err != nil {
+		return err
 	}
+
+	// create secret
+	secret := newSecret(cr, accessKey)
+
+	// Set AppService instance as the owner and controller
+	if err := controllerutil.SetControllerReference(cr, secret, r.scheme); err != nil {
+		return err
+	}
+
+	log.Info("Creating a new Secret", "Secret.Namespace", secret.Namespace, "Secret.Name", secret.Name)
+
+	// Create new secret
+	err = r.client.Create(context.TODO(), secret)
+	if err != nil {
+		return err
+	}
+
+	//update status fields SetupComplete
+	err = r.updateStatus(true, cr)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
