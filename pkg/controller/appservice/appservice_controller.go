@@ -204,7 +204,7 @@ func (r *ReconcileAppService) Reconcile(request reconcile.Request) (reconcile.Re
 	// TODO: Created policy using the above created user and Attach policy to the user
 	reqLogger.Info("Getting Policy Attached to the user")
 
-	customCreatedPolicy, err := getCustomPolicy(svc)
+	customCreatedPolicy, err := getCustomPolicy(svc, createdIamUser.UserName)
 
 	if customCreatedPolicy == nil && err == nil {
 		reqLogger.Info("Creating Policy for S3 Bucket")
@@ -549,10 +549,10 @@ func createAccessKey(svc *iam.IAM, userName string) (*iam.AccessKey, error) {
 	return result.AccessKey, nil
 }
 
-func getCustomPolicy(svc *iam.IAM) (*iam.Policy, error) {
+func getCustomPolicy(svc *iam.IAM, userName *string) (*iam.Policy, error) {
 	scope := "Local"
 
-	policyName := "S3BucketPolicyCustom"
+	policyName := "S3BucketPolicyCustom-" + *userName
 
 	policiesList, err := svc.ListPolicies(&iam.ListPoliciesInput{Scope: &scope})
 
@@ -619,7 +619,7 @@ func createPolicyForS3Bucket(svc *iam.IAM, bucketName string, folderName string)
 
 	result, err := svc.CreatePolicy(&iam.CreatePolicyInput{
 		PolicyDocument: aws.String(string(policy)),
-		PolicyName:     aws.String("S3BucketPolicyCustom"),
+		PolicyName:     aws.String("S3BucketPolicyCustom-" + folderName),
 	})
 
 	if err != nil {
