@@ -203,25 +203,30 @@ func (r *ReconcileAppService) Reconcile(request reconcile.Request) (reconcile.Re
 
 	// TODO: Created policy using the above created user and Attach policy to the user
 	reqLogger.Info("Getting Policy Attached to the user")
-	attachedPolicyArn, err := getAttachedPolicytoUser(svc, createdIamUser.UserName)
 
-	if !(attachedPolicyArn != nil) {
+	customCreatedPolicy, err := getCustomPolicy(svc)
+
+	if customCreatedPolicy == nil && err == nil {
 		reqLogger.Info("Creating Policy for S3 Bucket")
-		createdPolicy, err := createPolicyForS3Bucket(svc, s3BucketName, instance.Spec.UserName)
+		customCreatedPolicy, err = createPolicyForS3Bucket(svc, s3BucketName, instance.Spec.UserName)
 
 		if err != nil {
 			return reconcile.Result{}, err
 		}
+		reqLogger.Info("Policy for S3 Bucket Successfully")
+	}
 
+	attachedPolicyToUser, err := getAttachedPolicytoUser(svc, createdIamUser.UserName)
+
+	if err == nil && attachedPolicyToUser == nil {
 		reqLogger.Info("Attaching Policy to User")
 
-		err = attachPolicyToUser(svc, createdPolicy.Arn, *createdIamUser.UserName)
+		err = attachPolicyToUser(svc, customCreatedPolicy.Arn, *createdIamUser.UserName)
 
 		if err != nil {
 			return reconcile.Result{}, err
 		}
-	} else {
-		reqLogger.Info("Policy Already Attached to User")
+		reqLogger.Info("Policy Attached to User Successfully")
 	}
 
 	//Create access and secret keys
@@ -542,6 +547,27 @@ func createAccessKey(svc *iam.IAM, userName string) (*iam.AccessKey, error) {
 
 	fmt.Println("Success- Access key created")
 	return result.AccessKey, nil
+}
+
+func getCustomPolicy(svc *iam.IAM) (*iam.Policy, error) {
+	scope := "Local"
+
+	policyName := "S3BucketPolicyCustom"
+
+	policiesList, err := svc.ListPolicies(&iam.ListPoliciesInput{Scope: &scope})
+
+	if err != nil {
+		return nil, err
+	}
+
+	if len(policiesList.Policies) > 0 {
+		for _, policy := range policiesList.Policies {
+			if string(*policy.PolicyName) == policyName {
+				return policy, nil
+			}
+		}
+	}
+	return nil, nil
 }
 
 //Mayank
