@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: csye7374-project-operator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      name: csye7374-project-operator
+  template:
+    metadata:
+      labels:
+        name: csye7374-project-operator
+    spec:
+      serviceAccountName: csye7374-project-operator
+      containers:
+        - name: csye7374-project-operator
+          # Replace this with the built image name
+          image: pjain06/operator:v1
+          command:
+            - csye7374-project-operator
+          imagePullPolicy: Always
+          env:
+            - name: WATCH_NAMESPACE
+              value: ""
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: OPERATOR_NAME
+              value: "csye7374-project-operator"
+      imagePullSecrets:
+        - name: docker-secret
