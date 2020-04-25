@@ -15,7 +15,7 @@ kubectl create -f deploy/service_account.yaml
 kubectl create -f deploy/role.yaml
 kubectl create -f deploy/role_binding.yaml
 kubectl create -f deploy/crds/csye7374.app.com_appservices_crd.yaml
-kubectl create -f deploy/secret.yaml
+kubectl create -f deploy/aws-secret.yaml
 kubectl create -f deploy/docker-secret.yaml
 ```
 
@@ -42,5 +42,7 @@ kubectl delete -f deploy/operator.yaml
 kubectl delete -f deploy/role.yaml
 kubectl delete -f deploy/role_binding.yaml
 kubectl delete -f deploy/service_account.yaml
+kubectl delete -f deploy/aws-secret.yaml
+kubectl delete -f deploy/docker-secret.yaml
 kubectl delete -f deploy/crds/app.example.com_appservices_crd.yaml
 ```
