@@ -16,9 +16,9 @@ spec:
       containers:
         - name: csye7374-project-operator
           # Replace this with the built image name
-          image: yogitapatil/csye7374-s3-operator:latest
+          image: pjain06/operator:v1
           command:
-          - csye7374-project-operator
+            - csye7374-project-operator
           imagePullPolicy: Always
           env:
             - name: WATCH_NAMESPACE
@@ -29,5 +29,5 @@ spec:
                   fieldPath: metadata.name
             - name: OPERATOR_NAME
               value: "csye7374-project-operator"
-        imagePullSecrets:
-          - name: docker-secret
+      imagePullSecrets:
+        - name: docker-secret
